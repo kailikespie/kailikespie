@@ -1,0 +1,952 @@
+/* TI-RSLK MAX Line Sensor Demonstration
+ *
+ * Copyright (c) Dr. Xinrong Li @ UNT
+ * All rights reserved.
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>  //Exact-width integer types
+#include <ti\devices\msp432p4xx\driverlib\driverlib.h>  // Driver library
+
+
+
+
+#define CLOCK_HF    48000000 //48MHz
+#define CLOCK_LF    32000 //32kHz
+
+#define HEARTBEAT_FREQ    2  //unit: Hz, heart beat LED blinking frequency for debugging
+
+#define RED_LED    GPIO_PIN0  //heart beat LED
+#define GREEN_LED    GPIO_PIN1
+#define BLUE_LED    GPIO_PIN2
+
+#define NUM_DISP_TEXT_LINE    6
+#define MAX_STR_BUFFER_LEN    200
+
+#define PWM_FREQ    1000 //unit: Hz
+#define PWM_DUTYCYCLE_MIN    0 //unit: percent
+#define PWM_DUTYCYCLE_MAX    100 //unit: percent
+#define PWM_DUTYCYCLE_STEP    1 //unit: percent
+
+#define LEFT_MOTOR    0
+#define RIGHT_MOTOR    1
+
+#define MOTOR_FORWARD    1
+#define MOTOR_STOP    0
+#define MOTOR_BACKWARD    -1
+
+#define CENTER  0
+#define LEFT  1
+#define RIGHT  2
+#define COMPLETION 3
+// #define GUESS 4
+
+#define SOFTTIMER_FREQ    1e5 //Software timer with 10 microseconds resolution
+#define SOFTTIMER_PERIOD_MICROS    10 //in microseconds
+#define HEARTBEAT_FREQ    2  //unit: Hz, heart beat LED blinking frequency for debugging
+
+
+
+#define EVEN_LINESENSORS    (GPIO_PIN2|GPIO_PIN4)
+#define ODD_LINESENSORS    (GPIO_PIN3|GPIO_PIN5)
+
+
+
+
+//Function prototypes
+void initDevice_HFXT(void);
+void initSoftTimer(void);
+void initHeartBeatLED(void);
+void initDebugUART(void);
+void initLineSensors(void);
+void initMotors(void);
+void initTachometers(void);
+void MotorStart(void);
+void StateMachine(void);
+
+void leftMotor_activate(int flag);
+void rightMotor_activate(int flag);
+void leftMotor_run(int direction, int dutyCycle);
+void rightMotor_run(int direction, int dutyCycle);
+
+
+
+float tacho_calcSpeed(int timerCount);
+
+uint8_t LineSensors_getInputValue(void);
+
+void delayMicros(uint32_t delayTime);
+void delay(uint32_t delayCounts);
+uint32_t getCurrentTime(void);
+
+void uart0_transmitStr(const char *str);
+
+
+//Global variables
+uint32_t clockMCLK, clockSMCLK;
+uint8_t currentLED = RED_LED;
+
+volatile uint32_t SoftTimer_currentTime = 0;
+
+int currentMotor = LEFT_MOTOR;
+
+
+int leftMotor_dutyCycle = PWM_DUTYCYCLE_MIN;
+int leftMotor_direction = MOTOR_FORWARD;
+
+int rightMotor_dutyCycle = PWM_DUTYCYCLE_MIN;
+int rightMotor_direction = MOTOR_FORWARD;
+
+volatile int leftTacho_timerCount = 0;
+volatile int leftTacho_direction = MOTOR_FORWARD;
+
+volatile int rightTacho_timerCount = 0;
+volatile int rightTacho_direction = MOTOR_FORWARD;
+
+
+char strBuffer[MAX_STR_BUFFER_LEN];
+
+const char *terminalDisplayText[NUM_DISP_TEXT_LINE] =
+{
+    "\r\n",
+    "TI-RSLK MAX Bump Sensor Demo\r\n",
+    "  C: Change LED Color, L: Line Sensors Data, H: Help\r\n",
+    "> "
+};
+
+uint32_t Input; // 00=off, 01=right, 10=left, 11=on
+uint32_t Output; // 3=straight, 2=turn right, 1=turn left
+void main(void)
+{
+    int i, leftMotor_dutyCycle, rightMotor_dutyCycle, leftMotor_direction, rightMotor_direction, data;
+    //direction;
+//int data;
+
+
+
+    uint8_t lineSensorsData;
+
+
+    initDevice_HFXT();
+    //StateMachine();
+    //MotorStart();
+
+
+    initSoftTimer();
+    initHeartBeatLED();
+    initDebugUART();
+    initLineSensors();
+    initMotors();
+    //MotorStart();
+
+    Interrupt_enableMaster();
+    Timer32_startTimer(TIMER32_0_BASE, false);
+
+
+    //Initial display on terminal.
+    for(i=0; i<NUM_DISP_TEXT_LINE; i++)
+    {
+        uart0_transmitStr(terminalDisplayText[i]);
+    }
+
+
+   // while(1)
+ //  {
+
+//
+//
+//        if(UART_getInterruptStatus(EUSCI_A0_BASE, EUSCI_A_UART_RECEIVE_INTERRUPT_FLAG))
+//        {
+//            data = UART_receiveData(EUSCI_A0_BASE);
+//            UART_clearInterruptFlag(EUSCI_A0_BASE, EUSCI_A_UART_RECEIVE_INTERRUPT_FLAG);
+//
+//            switch(data)
+//            {
+//                case 'C':
+//                case 'c':
+//                    currentLED = (currentLED == BLUE_LED) ? RED_LED : (currentLED << 1); //cycle through three colors
+//                    uart0_transmitStr("Change blinking LED color.\r\n> ");
+//                    break;
+//
+//                case 'Z':
+//                case 'z':
+//                    lineSensorsData = LineSensors_getInputValue();
+//                    snprintf(strBuffer, MAX_STR_BUFFER_LEN, "Line sensors data: 0x%02X.\r\n> ", lineSensorsData);
+//                    uart0_transmitStr(strBuffer);
+//                    break;
+//
+//                case 'H':
+//                case 'h':
+//                    for(i=0; i<NUM_DISP_TEXT_LINE; i++)
+//                    {
+//                        uart0_transmitStr(terminalDisplayText[i]);
+//                    }
+//                    break;
+//
+//
+//                                    case 'L':
+//                                    case 'l':
+//                                        currentMotor = LEFT_MOTOR;
+//                                        break;
+//
+//                                    case 'R':
+//                                    case 'r':
+//                                        currentMotor = RIGHT_MOTOR;
+//                                        break;
+//
+//                                    case 'S':
+//                                    case 's':
+//                                        if(currentMotor == LEFT_MOTOR)
+//                                        {
+//                                            direction = (leftMotor_direction == MOTOR_FORWARD) ? MOTOR_BACKWARD : MOTOR_FORWARD;
+//                                            leftMotor_run(direction, leftMotor_dutyCycle);
+//                                        }
+//                                        else
+//                                        {
+//                                            direction = (rightMotor_direction == MOTOR_FORWARD) ? MOTOR_BACKWARD : MOTOR_FORWARD;
+//                                            rightMotor_run(direction, rightMotor_dutyCycle);
+//                                        }
+//
+//                                        uart0_transmitStr("Change direction.\r\n> ");
+//                                        break;
+//
+//                                    case 'I':
+//                                    case 'i':
+//                                        if(currentMotor == LEFT_MOTOR)
+//                                                                               {
+//                                                                                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle + PWM_DUTYCYCLE_STEP);
+//                                                                               }
+//                                        else
+//                                        {
+//                                            rightMotor_run(rightMotor_direction, rightMotor_dutyCycle + PWM_DUTYCYCLE_STEP);
+//                                        }
+//
+//                                        uart0_transmitStr("Increase PWM duty cycle.\r\n> ");
+//                                        break;
+//
+//                                    case 'D':
+//                                    case 'd':
+//                                        if(currentMotor == LEFT_MOTOR)
+//                                        {
+//                                            leftMotor_run(leftMotor_direction, leftMotor_dutyCycle - PWM_DUTYCYCLE_STEP);
+//                                        }
+//                                        else
+//                                        {
+//                                            rightMotor_run(rightMotor_direction, rightMotor_dutyCycle - PWM_DUTYCYCLE_STEP);
+//                                        }
+//
+//                                        uart0_transmitStr("Decrease PWM duty cycle.\r\n> ");
+//                                        break;
+//
+//                                    case 'V':
+//                                    case 'v':
+//                                        snprintf(strBuffer, MAX_STR_BUFFER_LEN, "Left RPM = %.1f, Left Dir = %d; Right RPM = %.1f, Right Dir = %d\r\n> ",
+//                                                 tacho_calcSpeed(leftTacho_timerCount), leftTacho_direction,
+//                                                 tacho_calcSpeed(rightTacho_timerCount), rightTacho_direction);
+//                                        uart0_transmitStr(strBuffer);
+//                                        break;
+//                                    case 'O':
+//                                    case 'o':
+//
+//
+//
+//                                        Motor_Start();
+//
+//                                        uart0_transmitStr("Stop motor NOW!!.\r\n> ");
+//                                        break;
+
+
+
+//            } //end of switch
+//        } //end of if
+//
+  //  } //end of while
+//MotorStart();
+    while(1){
+
+
+        for(i=0; i<100; i++)
+        {
+            MotorStart();
+        }
+for(data = 0; data<4;data++)
+{     //read the sensor: decide the state
+        switch(data)
+  {
+
+    case CENTER: //go right
+           lineSensorsData=LineSensors_getInputValue();
+           // you decide what to based on the sensor
+           //sensor data1 means your car is on the left;
+              //switch
+                //case left
+                   //turn right
+                //case right
+              switch(lineSensorsData)
+        {
+
+                 //where that timer at tho
+      case 0x08:
+
+          for(i=0; i<10000; i++){
+                 leftMotor_dutyCycle = 9;
+                 rightMotor_dutyCycle = 5;
+                 leftMotor_direction = MOTOR_FORWARD;
+                 rightMotor_direction = MOTOR_FORWARD;
+                 leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                 rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+          }
+                 break;
+
+
+
+
+      case 0x10:
+//                  delayMicros(5000000);
+          for(i=0; i<10000; i++){
+                leftMotor_dutyCycle = 5;
+                  rightMotor_dutyCycle = 9;
+                  leftMotor_direction = MOTOR_FORWARD;
+                  rightMotor_direction = MOTOR_FORWARD;
+                  leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                  rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+          }
+                  break;
+      case 0x18:
+                      // delayMicros(5000000);
+          for(i=0; i<10000; i++){
+                       leftMotor_dutyCycle = 9;
+                       rightMotor_dutyCycle = 8;
+                       leftMotor_direction = MOTOR_FORWARD;
+                       rightMotor_direction = MOTOR_FORWARD;
+                       leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                       rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+          }
+                      break;
+        }
+
+
+
+
+
+
+       case LEFT:
+           lineSensorsData=LineSensors_getInputValue();
+           switch(lineSensorsData)
+           {
+       case 0x30:
+           for(i=0; i<10000; i++){
+                   leftMotor_dutyCycle = 8;
+                   rightMotor_dutyCycle = 8;
+                   leftMotor_direction = MOTOR_BACKWARD;
+                   rightMotor_direction = MOTOR_FORWARD;
+                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                   rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+           }
+                   break;
+      case 0x20:
+          for(i=0; i<10000; i++){
+                  leftMotor_dutyCycle = 8;
+                  rightMotor_dutyCycle = 8;
+                  leftMotor_direction = MOTOR_BACKWARD;
+                  rightMotor_direction = MOTOR_FORWARD;
+                  leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                  rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+          }
+                  break;
+      case 0x38:
+          for(i=0; i<20000; i++){
+                  leftMotor_dutyCycle = 8;
+                  rightMotor_dutyCycle = 8;
+                  leftMotor_direction = MOTOR_FORWARD;
+                  rightMotor_direction = MOTOR_BACKWARD;
+                  leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                  rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+         }
+                  break;
+      case 0x28:
+
+          for(i=0; i<10000; i++){
+                 leftMotor_dutyCycle = 8;
+                 rightMotor_dutyCycle = 8;
+                 leftMotor_direction = MOTOR_BACKWARD;
+                 rightMotor_direction = MOTOR_FORWARD;
+                 leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                 rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+          }
+                 break;
+
+
+          }
+
+//
+//
+       case RIGHT:
+           lineSensorsData=LineSensors_getInputValue();
+            switch(lineSensorsData)
+            {
+       case 0x0C:
+           for(i=0; i<10000; i++){
+                   leftMotor_dutyCycle = 8;
+                   rightMotor_dutyCycle = 8;
+                   leftMotor_direction = MOTOR_FORWARD;
+                   rightMotor_direction = MOTOR_BACKWARD;
+                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                   rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+           }
+                   break;
+       case 0x1C:
+           for(i=0; i<10000; i++){
+                   leftMotor_dutyCycle = 8;
+                   rightMotor_dutyCycle = 8;
+                   leftMotor_direction = MOTOR_FORWARD;
+                   rightMotor_direction = MOTOR_BACKWARD;
+                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                   rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+           }
+                   break;
+       case 0x04:
+           for(i=0; i<10000; i++){
+                   leftMotor_dutyCycle = 8;
+                   rightMotor_dutyCycle = 8;
+                   leftMotor_direction = MOTOR_FORWARD;
+                   rightMotor_direction = MOTOR_BACKWARD;
+                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                   rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+           }
+                   break;
+
+       case 0x14:
+                  for(i=0; i<10000; i++){
+                          leftMotor_dutyCycle = 8;
+                          rightMotor_dutyCycle = 8;
+                          leftMotor_direction = MOTOR_FORWARD;
+                          rightMotor_direction = MOTOR_BACKWARD;
+                          leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                          rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+                  }
+                          break;
+
+
+
+            }
+
+ case COMPLETION:
+  lineSensorsData=LineSensors_getInputValue();
+    switch(lineSensorsData)
+                     {
+                     case 0x3C:
+                         for(i=0; i<10000000; i++){
+                                                   leftMotor_dutyCycle = 0;
+                                                   rightMotor_dutyCycle = 0;
+                                                   leftMotor_direction = MOTOR_FORWARD;
+                                                   rightMotor_direction = MOTOR_FORWARD;
+                                                   leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+                                                   rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+                                                   break;
+                     }
+
+                         break;
+
+             }
+
+//    case GUESS:
+//      lineSensorsData=LineSensors_getInputValue();
+//        switch(lineSensorsData)
+//                         {
+//                         case 0x00:
+//                             for(i=0; i<100000; i++){
+//                                                       leftMotor_dutyCycle = 15;
+//                                                       rightMotor_dutyCycle = 6;
+//                                                       leftMotor_direction = MOTOR_FORWARD;
+//                                                       rightMotor_direction = MOTOR_FORWARD;
+//                                                       leftMotor_run(leftMotor_direction, leftMotor_dutyCycle);
+//                                                       rightMotor_run(rightMotor_direction, rightMotor_dutyCycle);
+//                                                       break;
+//                         }
+//
+//                             break;
+//
+//                 }
+//
+
+        //MotorStart();
+}
+  }
+
+ }
+
+    }
+
+
+
+void initDevice_HFXT(void)
+{
+    WDT_A_holdTimer();  //Stop watchdog timer.
+
+    //Change VCORE to 1 to support a frequency higher than 24MHz.
+    //See MSP432 Data Sheet, Section 5.8 for Flash wait-state requirements for active frequency.
+    PCM_setPowerState(PCM_AM_DCDC_VCORE1);
+    FlashCtl_setWaitState(FLASH_BANK0, 1);
+    FlashCtl_setWaitState(FLASH_BANK1, 1);
+
+    FPU_enableModule();
+    FPU_enableLazyStacking(); //Required to use FPU within ISR.
+
+    //ConfigurPJ.2 and PJ.3 in HFXT mode.
+    //Initialize external clock sources HFXT.
+    GPIO_setAsPeripheralModuleFunctionOutputPin(GPIO_PORT_PJ, GPIO_PIN2|GPIO_PIN3, GPIO_PRIMARY_MODULE_FUNCTION);
+    CS_setExternalClockSourceFrequency(CLOCK_LF, CLOCK_HF);
+    CS_startHFXT(false);
+
+    CS_initClockSignal(CS_MCLK, CS_HFXTCLK_SELECT, CS_CLOCK_DIVIDER_1);
+    CS_initClockSignal(CS_HSMCLK, CS_HFXTCLK_SELECT, CS_CLOCK_DIVIDER_8);
+    CS_initClockSignal(CS_SMCLK, CS_HFXTCLK_SELECT, CS_CLOCK_DIVIDER_16);
+
+    clockMCLK = CS_getMCLK();
+    clockSMCLK = CS_getSMCLK();
+}
+
+
+void initSoftTimer(void)
+{
+    SysTick_enableModule(); //Enable and start the SysTick counter.
+
+    //SysTick is clocked with the CPU free running clock, MCLK.
+    //The set period must be between 1 and 16,777,215.
+    SysTick_setPeriod(clockMCLK/SOFTTIMER_FREQ);
+
+    SysTick_enableInterrupt();
+}
+
+
+void initHeartBeatLED(void)
+{
+    //Configure P2.0, P2.1, P2.2 as output.
+    //P2.0, P2.1, P2.2 are connected to a RGB tri-color LED on LaunchPad.
+    GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2);
+
+    Timer32_initModule(TIMER32_0_BASE, TIMER32_PRESCALER_1, TIMER32_32BIT, TIMER32_PERIODIC_MODE);
+    Timer32_setCount(TIMER32_0_BASE, clockMCLK/HEARTBEAT_FREQ);
+    Timer32_enableInterrupt(TIMER32_0_BASE);
+    Interrupt_enableInterrupt(INT_T32_INT1); // Enable Timer32_0 interrupt in the interrupt controller.
+}
+
+
+void initDebugUART(void)
+{
+    // Configuration for 3MHz SMCLK, 9600 baud rate.
+    // Calculated using the online calculator that TI provides at:
+    // http://software-dl.ti.com/msp430/msp430_public_sw/mcu/msp430/MSP430BaudRateConverter/index.html
+    const eUSCI_UART_ConfigV1 config =
+    {
+        EUSCI_A_UART_CLOCKSOURCE_SMCLK, //SMCLK Clock Source
+        19, //BRDIV = 19
+        8, //UCxBRF = 8
+        0, //UCxBRS = 0
+        EUSCI_A_UART_NO_PARITY, //No Parity
+        EUSCI_A_UART_LSB_FIRST, //MSB First
+        EUSCI_A_UART_ONE_STOP_BIT, //One stop bit
+        EUSCI_A_UART_MODE, //UART mode
+        EUSCI_A_UART_OVERSAMPLING_BAUDRATE_GENERATION, //Oversampling
+        EUSCI_A_UART_8_BIT_LEN
+    };
+
+    //Configure GPIO pins for UART. RX: P1.2, TX:P1.3.
+    GPIO_setAsPeripheralModuleFunctionInputPin(GPIO_PORT_P1, GPIO_PIN2|GPIO_PIN3, GPIO_PRIMARY_MODULE_FUNCTION);
+
+    UART_initModule(EUSCI_A0_BASE, &config);
+    UART_enableModule(EUSCI_A0_BASE);
+}
+
+
+void initLineSensors(void)
+{
+    //Control pin for even-numbered line sensors
+    GPIO_setAsOutputPin(GPIO_PORT_P5, GPIO_PIN3);
+
+    //Control pin for odd-numbered line sensors
+    GPIO_setAsOutputPin(GPIO_PORT_P9, GPIO_PIN2);
+}
+
+
+uint8_t LineSensors_getInputValue(void)
+{
+    uint8_t data;
+
+    //get input values from even-numbered line sensors
+    GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN3);
+
+    GPIO_setAsOutputPin(GPIO_PORT_P7, EVEN_LINESENSORS);
+    GPIO_setOutputHighOnPin(GPIO_PORT_P7, EVEN_LINESENSORS);
+
+    delayMicros(10);
+    GPIO_setAsInputPin(GPIO_PORT_P7, EVEN_LINESENSORS);
+
+    delayMicros(1000);
+    data = P7->IN & EVEN_LINESENSORS; //Read multiple pins at a time.
+
+    GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN3);
+    delayMicros(1000);
+
+    //get input values from odd-numbered line sensors
+    GPIO_setOutputHighOnPin(GPIO_PORT_P9, GPIO_PIN2);
+
+    GPIO_setAsOutputPin(GPIO_PORT_P7, ODD_LINESENSORS);
+    GPIO_setOutputHighOnPin(GPIO_PORT_P7, ODD_LINESENSORS);
+
+    delayMicros(10);
+    GPIO_setAsInputPin(GPIO_PORT_P7, ODD_LINESENSORS);
+
+    delayMicros(1000);
+    data |= P7->IN & ODD_LINESENSORS; //Read multiple pins at a time.
+
+    GPIO_setOutputLowOnPin(GPIO_PORT_P9, GPIO_PIN2);
+
+    return data;
+}
+
+
+void initMotors(void)
+{
+    Timer_A_PWMConfig leftMotor_pwmConfig =
+    {
+            TIMER_A_CLOCKSOURCE_SMCLK,
+            TIMER_A_CLOCKSOURCE_DIVIDER_3,
+            clockSMCLK/(3*PWM_FREQ),
+            TIMER_A_CAPTURECOMPARE_REGISTER_4,
+            TIMER_A_OUTPUTMODE_RESET_SET,
+            clockSMCLK/(3*PWM_FREQ)/100*leftMotor_dutyCycle
+    };
+
+    Timer_A_PWMConfig rightMotor_pwmConfig =
+    {
+            TIMER_A_CLOCKSOURCE_SMCLK,
+            TIMER_A_CLOCKSOURCE_DIVIDER_3,
+            clockSMCLK/(3*PWM_FREQ),
+            TIMER_A_CAPTURECOMPARE_REGISTER_3,
+            TIMER_A_OUTPUTMODE_RESET_SET,
+            clockSMCLK/(3*PWM_FREQ)/100*rightMotor_dutyCycle
+    };
+
+    //P3.7: 1 to activate left motor;
+    //P3.6: 1 to activate right motor
+    GPIO_setAsOutputPin(GPIO_PORT_P3, GPIO_PIN6|GPIO_PIN7);
+
+    GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6);
+    GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN7);
+
+    //P5.4: left motor, 0 for forward, 1 for backward;
+    //P5.5: right motor, 0 for forward, 1 for backward
+    GPIO_setAsOutputPin(GPIO_PORT_P5, GPIO_PIN4|GPIO_PIN5);
+
+    GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN4);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN5);
+
+    //P2.7/TA0.4: left motor PWM;
+    //P2.6/TA0.3: right motor PWM
+    GPIO_setAsPeripheralModuleFunctionOutputPin(GPIO_PORT_P2, GPIO_PIN7, GPIO_PRIMARY_MODULE_FUNCTION);
+    GPIO_setAsPeripheralModuleFunctionOutputPin(GPIO_PORT_P2, GPIO_PIN6, GPIO_PRIMARY_MODULE_FUNCTION);
+
+    Timer_A_generatePWM(TIMER_A0_BASE, &leftMotor_pwmConfig);
+    Timer_A_generatePWM(TIMER_A0_BASE, &rightMotor_pwmConfig);
+}
+
+
+void initTachometers(void)
+{
+    Timer_A_ContinuousModeConfig Timer_A_config =
+    {
+            TIMER_A_CLOCKSOURCE_SMCLK,  //3MHz
+            TIMER_A_CLOCKSOURCE_DIVIDER_5,  //600kHz
+            TIMER_A_TAIE_INTERRUPT_DISABLE,
+            TIMER_A_DO_CLEAR
+    };
+
+    Timer_A_CaptureModeConfig leftTacho_captureConfig =
+    {
+            TIMER_A_CAPTURECOMPARE_REGISTER_1,
+            TIMER_A_CAPTUREMODE_RISING_EDGE,
+            TIMER_A_CAPTURE_INPUTSELECT_CCIxA,
+            TIMER_A_CAPTURE_SYNCHRONOUS,
+            TIMER_A_CAPTURECOMPARE_INTERRUPT_ENABLE,
+            TIMER_A_OUTPUTMODE_OUTBITVALUE
+    };
+
+
+    Timer_A_CaptureModeConfig rightTacho_captureConfig =
+    {
+            TIMER_A_CAPTURECOMPARE_REGISTER_0,
+            TIMER_A_CAPTUREMODE_RISING_EDGE,
+            TIMER_A_CAPTURE_INPUTSELECT_CCIxA,
+            TIMER_A_CAPTURE_SYNCHRONOUS,
+            TIMER_A_CAPTURECOMPARE_INTERRUPT_ENABLE,
+            TIMER_A_OUTPUTMODE_OUTBITVALUE
+    };
+
+    Timer_A_configureContinuousMode(TIMER_A3_BASE, &Timer_A_config);
+
+    //P10.5/TA3.1: left tachometer
+    //P10.4/TA3.0: right tachometer
+    GPIO_setAsPeripheralModuleFunctionInputPin(GPIO_PORT_P10, GPIO_PIN5, GPIO_PRIMARY_MODULE_FUNCTION);
+    GPIO_setAsPeripheralModuleFunctionInputPin(GPIO_PORT_P10, GPIO_PIN4, GPIO_PRIMARY_MODULE_FUNCTION);
+
+    //TA3.1: left tachometer pulse period (i.e., speed) measurement
+    //TA3.0: right tachometer pulse period (i.e., speed) measurement
+    Timer_A_initCapture(TIMER_A3_BASE, &leftTacho_captureConfig);
+    Timer_A_initCapture(TIMER_A3_BASE, &rightTacho_captureConfig);
+
+    //P5.2: left tachometer direction
+    //P5.0: right tachometer direction
+    GPIO_setAsInputPin(GPIO_PORT_P5, GPIO_PIN0|GPIO_PIN2);
+
+    Interrupt_enableInterrupt(INT_TA3_0);
+    Interrupt_enableInterrupt(INT_TA3_N);
+}
+
+
+
+//flag = 1 to activate, 0 to sleep
+void leftMotor_activate(int flag)
+{
+    if(flag)
+    {
+        GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN7);
+    }
+    else
+    {
+        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN7);
+    }
+}
+
+
+//flag = 1 to activate, 0 to sleep
+void rightMotor_activate(int flag)
+{
+    if(flag)
+    {
+        GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6);
+    }
+    else
+    {
+        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6);
+    }
+}
+
+
+void leftMotor_run(int direction, int dutyCycle)
+{
+    if(leftMotor_direction != direction)
+    {
+        leftMotor_direction = direction;
+        if(direction == MOTOR_FORWARD)
+            GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN4);
+        else
+            GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN4);
+    }
+
+    if(dutyCycle > PWM_DUTYCYCLE_MAX)
+    {
+        dutyCycle = PWM_DUTYCYCLE_MAX;
+    }
+
+    if(dutyCycle < PWM_DUTYCYCLE_MIN)
+    {
+        dutyCycle = PWM_DUTYCYCLE_MIN;
+    }
+
+    if(leftMotor_dutyCycle != dutyCycle)
+    {
+        leftMotor_dutyCycle = dutyCycle;
+        Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_4, clockSMCLK/(3*PWM_FREQ)/100*leftMotor_dutyCycle);
+    }
+}
+
+
+void rightMotor_run(int direction, int dutyCycle)
+{
+    if(rightMotor_direction != direction)
+    {
+        rightMotor_direction = direction;
+        if(direction  == MOTOR_FORWARD)
+            GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN5);
+        else
+            GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN5);
+    }
+
+    if(dutyCycle > PWM_DUTYCYCLE_MAX)
+    {
+        dutyCycle = PWM_DUTYCYCLE_MAX;
+    }
+
+    if(dutyCycle < PWM_DUTYCYCLE_MIN)
+    {
+        dutyCycle = PWM_DUTYCYCLE_MIN;
+    }
+
+    if(rightMotor_dutyCycle != dutyCycle)
+    {
+        rightMotor_dutyCycle = dutyCycle;
+        Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_3, clockSMCLK/(3*PWM_FREQ)/100*rightMotor_dutyCycle);
+    }
+}
+
+
+
+float tacho_calcSpeed(int timerCount)
+{
+    //pulsePeriod = timerCount/timerClockFreq
+    //speed (RPM) = 60/(360*pulsePeriod)
+    //Hard-coded for Timer_A frequency 3MHz/6 = 600kHz.
+    return 100000.0/timerCount;
+}
+
+
+
+//Transmit a string through UART0.
+void uart0_transmitStr(const char *str)
+{
+    int len, i=0;
+
+    len = strlen(str);
+    while(i < len)
+    {
+        UART_transmitData(EUSCI_A0_BASE, str[i++]);
+        while(!UART_getInterruptStatus(EUSCI_A0_BASE, EUSCI_A_UART_TRANSMIT_COMPLETE_INTERRUPT_FLAG));
+        UART_clearInterruptFlag(EUSCI_A0_BASE, EUSCI_A_UART_TRANSMIT_COMPLETE_INTERRUPT_FLAG);
+    }
+}
+
+
+//Timer32_0 ISR
+void T32_INT1_IRQHandler(void)
+{
+    Timer32_clearInterruptFlag(TIMER32_0_BASE);
+
+    if(GPIO_getInputPinValue(GPIO_PORT_P2, RED_LED|GREEN_LED|BLUE_LED))
+    {
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, RED_LED|GREEN_LED|BLUE_LED);
+    }
+    else
+    {
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, currentLED);
+    }
+}
+
+
+//delayTime: delay time in microseconds (us)
+//The resolution of the SoftTimer is 10 microseconds, i.e., SOFTTIMER_PERIOD_MICROS = 10.
+void delayMicros(uint32_t delayTime)
+{
+    delay((uint32_t)(delayTime/SOFTTIMER_PERIOD_MICROS));
+}
+
+
+//delayCounts: SoftTimer counts
+void delay(uint32_t delayCounts)
+{
+    uint32_t t0;
+
+    t0 = getCurrentTime();
+
+    while(1)
+    {
+        if((uint32_t)(t0 + delayCounts) <= getCurrentTime())
+            return;
+    }
+}
+
+
+//Return the current counts of the SoftTimer counter.
+//The resolution of the SoftTimer is 10 microseconds.
+uint32_t getCurrentTime(void)
+{
+    return SoftTimer_currentTime;
+}
+
+
+//SysTick ISR
+//SysTick Timer triggers every 10 microseconds.
+void SysTick_Handler(void)
+{
+    SoftTimer_currentTime ++;
+}
+
+
+//Left tachometer pulse period measurement
+void TA3_N_IRQHandler(void)
+{
+    static uint_fast16_t lastCount = 0, currentCount = 0;
+
+    Timer_A_clearCaptureCompareInterrupt(TIMER_A3_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_1);
+
+    currentCount = Timer_A_getCaptureCompareCount(TIMER_A3_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_1);
+
+    leftTacho_timerCount = currentCount - lastCount;
+    if(leftTacho_timerCount < 0)
+    {
+        leftTacho_timerCount += 0xFFFF;
+    }
+
+    lastCount = currentCount;
+
+    //P5.2: 1 for forward, 0 for backward
+    if(GPIO_getInputPinValue(GPIO_PORT_P5, GPIO_PIN2))
+    {
+        leftTacho_direction = MOTOR_FORWARD;
+    }
+    else
+    {
+        leftTacho_direction = MOTOR_BACKWARD;
+    }
+}
+
+
+//Right tachometer pulse period measurement
+void TA3_0_IRQHandler(void)
+{
+    static uint_fast16_t lastCount = 0, currentCount = 0;
+
+    Timer_A_clearCaptureCompareInterrupt(TIMER_A3_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_0);
+
+    currentCount = Timer_A_getCaptureCompareCount(TIMER_A3_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_0);
+
+    rightTacho_timerCount = currentCount - lastCount;
+    if(rightTacho_timerCount < 0)
+    {
+        rightTacho_timerCount += 0xFFFF;
+    }
+
+    lastCount = currentCount;
+
+    //P5.0: 1 for forward, 0 for backward
+    if(GPIO_getInputPinValue(GPIO_PORT_P5, GPIO_PIN0))
+    {
+        rightTacho_direction = MOTOR_FORWARD;
+    }
+    else
+    {
+        rightTacho_direction = MOTOR_BACKWARD;
+    }
+}
+
+
+
+
+void MotorStart(void)
+{
+    int direction;
+
+               int leftMotor_dutyCycle = 9;
+               int  rightMotor_dutyCycle = 8;
+               direction = MOTOR_FORWARD;
+                leftMotor_run(direction, leftMotor_dutyCycle);
+                rightMotor_run(direction, rightMotor_dutyCycle);
+}
+// read sensor data:
+// decide state//
+// enter case statement
+ // turn left or right or do nothing
+ // delay
